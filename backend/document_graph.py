@@ -42,6 +42,19 @@ def build_document_graph(
                 )
             )
 
+    # Add sequential edges to connect all clauses
+    for i in range(len(clauses) - 1):
+        source = clauses[i].index
+        target = clauses[i + 1].index
+        graph.add_edge(source, target, similarity=0.1)
+        edges.append(
+            GraphEdge(
+                source_index=source,
+                target_index=target,
+                similarity=0.1,
+            )
+        )
+
     return graph, edges, vectors
 
 

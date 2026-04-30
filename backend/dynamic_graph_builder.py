@@ -8,7 +8,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 from services.model_singleton import embed
 
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
+# Project root: Graphs-for-NLP/
+BASE_DIR = Path(__file__).resolve().parent.parent
 EMBED_PATH = BASE_DIR / "data" / "embeddings.npy"
 GRAPH_PATH = BASE_DIR / "data" / "legal_graph.pkl"
 
@@ -28,8 +29,75 @@ def load_base_graph():
 # 2. SPLIT TEXT → CLAUSES
 # ─────────────────────────────────────────
 def split_clauses(text):
-    clauses = re.split(r'\n+|\.\s+', text)
-    return [c.strip() for c in clauses if len(c.strip()) > 20]
+    # Heuristic-aware splitting that keeps headings with their clause bodies.
+    # Approach:
+    # - Split by lines, iterate and detect headings (numbered lines, short ALL CAPS, roman numerals, or lines ending with ':')
+    # - When a heading is found, merge it with following non-heading lines until the next heading or blank line
+    # - For non-heading blocks, group consecutive non-blank lines into a clause
+    lines = [l.strip() for l in re.split(r'\r?\n', text)]
+    clauses = []
+    i = 0
+
+    def is_heading(line: str) -> bool:
+        if not line:
+            return False
+        # numbered headings like '1. ', '1)', '1 -', '1 '
+        if re.match(r'^\d+(?:[\.\)\-\s]).*', line):
+            return True
+        # roman numerals 'I.', 'IV)', etc.
+        if re.match(r'^[IVXLCDM]+[\.|\)].*', line):
+            return True
+        # short all-caps lines are likely headings (limit words to avoid full-sentence caps)
+        words = line.split()
+        if len(words) <= 10 and line.upper() == line and any(c.isalpha() for c in line):
+            return True
+        # lines ending with colon often denote headings
+        if line.endswith(':') and len(line) < 120:
+            return True
+        return False
+
+    while i < len(lines):
+        line = lines[i]
+        if not line:
+            i += 1
+            continue
+
+        if is_heading(line):
+            parts = [line]
+            j = i + 1
+            # gather following non-heading lines into this clause
+            while j < len(lines):
+                next_line = lines[j]
+                if not next_line:
+                    j += 1
+                    break
+                if is_heading(next_line):
+                    break
+                parts.append(next_line)
+                j += 1
+            clause = ' '.join(parts).strip()
+            if len(clause) > 20:
+                clauses.append(clause)
+            i = j
+        else:
+            # accumulate a block of non-heading lines until blank or next heading
+            parts = [line]
+            j = i + 1
+            while j < len(lines):
+                next_line = lines[j]
+                if not next_line:
+                    j += 1
+                    break
+                if is_heading(next_line):
+                    break
+                parts.append(next_line)
+                j += 1
+            clause = ' '.join(parts).strip()
+            if len(clause) > 20:
+                clauses.append(clause)
+            i = j
+
+    return clauses
 
 
 # ─────────────────────────────────────────
@@ -175,5 +243,9 @@ def build_dynamic_graph(text):
         clause_types,
         base_embeddings
     )
+
+    # Add sequential edges to connect all clauses in document order
+    for i in range(len(clauses) - 1):
+        final_G.add_edge(i, i + 1, risk=1.0, difference=0.0, base_nodes=None)
 
     return final_G

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import io
@@ -87,7 +87,7 @@ async def build_graph_from_clauses(clauses: List[str], similarity_threshold: flo
 
 
 @app.post("/build-graph-from-text")
-async def build_graph_from_text(text: str):
+async def build_graph_from_text(text: str = Body(...)):
     """
     Build a graph from raw contract text by splitting into clauses
     
@@ -130,24 +130,45 @@ async def build_graph_from_text(text: str):
 async def upload_contract_csv(file: UploadFile = File(...)):
     """
     Upload a CSV file containing contract clauses
-    
-    Expected CSV columns: clause_text, clause_type (optional), risk_level (optional)
+
+    Supported formats:
+    - CSV with a header column named `clause_text` (preferred)
+    - CSV without headers where each row is a clause (single column or multiple columns joined)
+    - Plain text file where each line is a clause (fallback)
     """
     try:
         if not file.filename.endswith('.csv'):
             raise HTTPException(status_code=400, detail="File must be a CSV")
-        
         content = await file.read()
-        df = pd.read_csv(io.BytesIO(content))
-        
-        if 'clause_text' not in df.columns:
+
+        clauses = []
+        # Try reading as CSV with header first
+        try:
+            df = pd.read_csv(io.BytesIO(content))
+            if 'clause_text' in df.columns:
+                clauses = df['clause_text'].astype(str).tolist()
+            else:
+                # Fallback: read without header and join all columns into a single clause string per row
+                df_no_header = pd.read_csv(io.BytesIO(content), header=None)
+                clauses = df_no_header.fillna('').astype(str).agg(' '.join, axis=1).tolist()
+                clauses = [c.strip() for c in clauses if len(c.strip()) > 0]
+        except Exception:
+            # Final fallback: treat file as plain text and split by lines
+            try:
+                text = content.decode('utf-8', errors='ignore')
+                clauses = [line.strip() for line in text.splitlines() if len(line.strip()) > 0]
+            except Exception:
+                clauses = []
+
+        if not clauses:
             raise HTTPException(
-                status_code=400, 
-                detail="CSV must contain 'clause_text' column"
+                status_code=400,
+                detail=("No clauses found in file. Provide a CSV with a 'clause_text' column, "
+                        "a CSV where each row is a clause, or a plain text file with one clause per line.")
             )
         
-        # Extract clauses
-        clauses = df['clause_text'].astype(str).tolist()
+        if len(clauses) > 100:
+            raise HTTPException(status_code=400, detail="Too many clauses (max 100). Please split the document.")
         
         # Build graph
         clause_objects = [
